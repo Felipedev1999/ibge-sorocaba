@@ -66,7 +66,7 @@
   var problems = [];       // problemas encontrados nos dados
   var resultIndex = {};    // 'personId|year' -> result
   var years = [];          // anos com pelo menos um resultado válido
-  var ui = { search: '' };
+  var ui = { search: '', forceWide: {}, allFichas: false };
 
   // ---------------------------------------------------------------------------
   // Utilidades de DOM
@@ -251,7 +251,7 @@
       showRef: true,
       explorer: { x: 'axis:economia', y: 'axis:moral', color: 'person', size: 'fixed', labels: true, trails: false, sim: null },
       group: { values: true, map: 'countryPresent', aff: 'sim', netK: 1, netColor: 'side' },
-      compare: { attr: cats.length ? cats[0].key : null, mode: 'bars' },
+      compare: { attr: cats.length ? cats[0].key : null, mode: 'bars', radarShow: 'both', radarSel: null },
       person: null
     };
   }
@@ -288,6 +288,8 @@
     if (state.group.netColor !== 'side') p.nc = state.group.netColor;
     if (state.compare.attr && state.compare.attr !== d.compare.attr) p.cmp = state.compare.attr;
     if (state.compare.mode !== 'bars') p.cm = state.compare.mode;
+    if (state.compare.radarShow !== 'both') p.rs = state.compare.radarShow;
+    if (state.compare.radarSel) p.rsel = state.compare.radarSel.length ? state.compare.radarSel.join('.') : 'none';
     if (state.person) p.p = state.person;
     var hash = Object.keys(p).map(function (k) { return k + '=' + enc(p[k]); }).join('&');
     var target = hash ? '#' + hash : '';
@@ -329,7 +331,9 @@
     if (p.nk === '2' || p.nk === '3') s.group.netK = Number(p.nk);
     if (p.nc === 'person') s.group.netColor = 'person';
     if (p.cmp) s.compare.attr = p.cmp;
-    if (p.cm === 'radar' || p.cm === 'people') s.compare.mode = p.cm;
+    if (p.cm === 'radar') s.compare.mode = 'radar';
+    if (p.rs === 'people' || p.rs === 'means') s.compare.radarShow = p.rs;
+    if (p.rsel) s.compare.radarSel = p.rsel === 'none' ? [] : p.rsel.split('.').filter(Boolean);
     if (p.p) s.person = p.p;
     return s;
   }
@@ -481,11 +485,12 @@
       h('button', { class: 'btn' + (active ? ' btn-primary' : ''), type: 'button', 'aria-label': 'Abrir filtros', onClick: function () { openDrawer(true); } }, [
         '☰ Filtros', h('span', { class: 'badge' }, active ? String(active) : (ctx.people.length + '/' + ctx.allPeople.length))
       ]),
-      h('label', { class: 'field field-inline' }, ['Ano', years.length ? select(yearOpts, String(state.year), function (v) { set(function (s) { s.year = Number(v); }); }, { 'aria-label': 'Ano' }) : h('span', { class: 'muted' }, '—')]),
+      h('label', { class: 'field field-inline' }, [h('span', { class: 'field-label' }, 'Ano'), years.length ? select(yearOpts, String(state.year), function (v) { set(function (s) { s.year = Number(v); }); }, { 'aria-label': 'Ano' }) : h('span', { class: 'muted' }, '—')]),
       DATA.people.some(function (p) { return !!p.alias; })
         ? segmented([{ id: 'name', label: 'Nome' }, { id: 'alias', label: 'Apelido' }], state.names, function (v) { set(function (s) { s.names = v; }); }, 'Exibir nomes como')
         : null,
-      h('button', { class: 'icon-btn', type: 'button', title: 'Alternar tema claro/escuro', 'aria-label': 'Alternar tema', onClick: toggleTheme }, document.documentElement.getAttribute('data-theme') === 'dark' ? '☀' : '☾')
+      h('button', { class: 'icon-btn', type: 'button', title: 'Alternar tema claro/escuro', 'aria-label': 'Alternar tema', onClick: toggleTheme }, document.documentElement.getAttribute('data-theme') === 'dark' ? '☀' : '☾'),
+      window.Auth ? h('button', { class: 'icon-btn', type: 'button', title: 'Bloquear o painel (pede a senha de novo)', 'aria-label': 'Bloquear o painel', onClick: function () { window.Auth.lock(); } }, '🔒') : null
     ]));
   }
 
@@ -506,6 +511,9 @@
         onClick: function () { set(function (s) { s.view = v.id; }); window.scrollTo({ top: 0 }); }
       }, v.label));
     });
+    // No celular as abas rolam na horizontal: mantém a aba ativa à vista.
+    var on = nav.querySelector('.tab.on');
+    if (on && nav.scrollWidth > nav.clientWidth) nav.scrollLeft = Math.max(0, on.offsetLeft - 16);
   }
 
   function renderChips(ctx) {
@@ -687,7 +695,9 @@
   // ---------------------------------------------------------------------------
   // Render principal
   // ---------------------------------------------------------------------------
+  var ready = false; // vira true depois da senha e das fontes
   function render() {
+    if (!ready) return;
     var ctx = buildCtx();
     renderTop(ctx);
     renderTabs();
@@ -724,6 +734,37 @@
   function openPerson(pid) {
     set(function (s) { s.person = pid; s.view = 'person'; });
     window.scrollTo({ top: 0 });
+  }
+
+  // Cliques vindos dos gráficos. Em tela de toque o primeiro toque só mostra o
+  // tooltip; tocar de novo na mesma pessoa (em até 5 s) abre a visão individual.
+  var lastTap = { id: null, t: 0 };
+  function chartOpenPerson(pid) {
+    if (!Charts.isTouch()) { openPerson(pid); return; }
+    var now = Date.now();
+    if (lastTap.id === pid && now - lastTap.t < 5000) { lastTap = { id: null, t: 0 }; openPerson(pid); }
+    else lastTap = { id: pid, t: now };
+  }
+
+  // Gráficos que não cabem numa tela estreita: mostra um aviso no lugar, com a
+  // opção de ver assim mesmo (com rolagem lateral). Devolve true se o gráfico
+  // deve ser desenhado.
+  function desktopOnly(box, key, what) {
+    if (window.innerWidth >= 700) return true;
+    if (ui.forceWide[key]) {
+      var wrap = h('div', { class: 'wide-scroll' });
+      box.parentNode.insertBefore(wrap, box);
+      wrap.appendChild(box);
+      box.style.minWidth = '760px';
+      wrap.parentNode.insertBefore(h('p', { class: 'hint wide-hint' }, '↔ Arraste para os lados para ver o gráfico inteiro.'), wrap);
+      return true;
+    }
+    box.replaceWith(h('div', { class: 'desktop-only' }, [
+      h('div', { class: 'desktop-only-icon', 'aria-hidden': 'true' }, '🖥'),
+      h('p', null, [h('b', null, 'Melhor no computador. '), what + ' precisa de uma tela mais larga para ficar legível. Abra no computador ou gire o celular.']),
+      h('button', { type: 'button', class: 'btn btn-small', onClick: function () { ui.forceWide[key] = true; render(); } }, 'Mostrar assim mesmo')
+    ]));
+    return false;
   }
 
   function noPeople(view, ctx) {
@@ -1019,7 +1060,7 @@
       : anySite ? 'A cor é a categoria que o 12 Axes deu; para quem não tem, o lado econômico calculado.'
       : 'A cor é o lado econômico calculado (média de Público e Planejamento).';
     view.appendChild(pageHead('O mapa', reading.titleHtml, 'Na horizontal, a economia: média de Público↔Privado e Planejamento↔Livre mercado. Na vertical, os costumes: média de Tradicionalista, Religioso e Assimilação. ' + colorNote));
-    var box = chartBox('heroMap', window.innerWidth < 700 ? 460 : 600);
+    var box = chartBox('heroMap', window.innerWidth < 700 ? Math.min(520, window.innerWidth + 40) : 600);
     var notes = reading.items.length
       ? reading.items.map(function (it) { return h('div', { class: 'reading' }, [h('h4', null, it.title), h('p', null, it.text)]); })
       : [h('p', { class: 'hint' }, 'Sem leituras para este filtro.')];
@@ -1032,7 +1073,7 @@
       groupOf: function (p) { return ctx.sideOf(p).label; },
       groupColor: function (g) { return categoryStyle(g).color; },
       groupOrder: CATEGORY_ORDER
-    }, { onPerson: openPerson });
+    }, { onPerson: chartOpenPerson });
   }
 
   // ---------------------------------------------------------------------------
@@ -1085,7 +1126,7 @@
     view.appendChild(h('div', { class: 'card controls-card' }, [controls, presets]));
 
     var xm = metric(ctx, ex.x), ym = metric(ctx, ex.y);
-    var box = chartBox('explorerChart', window.innerWidth < 700 ? 460 : 620);
+    var box = chartBox('explorerChart', window.innerWidth < 700 ? Math.min(520, window.innerWidth + 60) : 620);
     var caption = [];
     if (xm.composite) caption.push('Horizontal: ' + xm.composite.description + '.');
     if (ym.composite) caption.push('Vertical: ' + ym.composite.description + '.');
@@ -1139,7 +1180,7 @@
       box.replaceWith(empty('Sem valores para: ' + unavailable.join(' e ') + '. ' + (ctx.pca.ok ? '' : ctx.pca.reason)));
       return;
     }
-    Charts.explorer(box, ctx, { xMetric: xm, yMetric: ym, groupOf: groupOf, groupColor: groupColor, groupOrder: groupOrder, sizeOf: sizeOf, sizeLabel: sizeLabel, labels: ex.labels, trails: ex.trails, photos: state.photos }, { onPerson: openPerson });
+    Charts.explorer(box, ctx, { xMetric: xm, yMetric: ym, groupOf: groupOf, groupColor: groupColor, groupOrder: groupOrder, sizeOf: sizeOf, sizeLabel: sizeLabel, labels: ex.labels, trails: ex.trails, photos: state.photos }, { onPerson: chartOpenPerson });
   }
 
   // Frases automáticas sobre os quadrantes de um par de eixos (ou compostos).
@@ -1207,8 +1248,14 @@
       ]));
     }
 
-    // Fichas
-    var fichas = h('div', { class: 'fichas' }, ctx.people.map(function (p) { return fichaCard(p, ctx); }));
+    // Fichas (no celular, só as 4 primeiras até pedir todas)
+    var FICHAS_MOBILE = 4;
+    var collapse = window.innerWidth < 700 && !ui.allFichas && ctx.people.length > FICHAS_MOBILE + 1;
+    var fichaPeople = collapse ? ctx.people.slice(0, FICHAS_MOBILE) : ctx.people;
+    var fichas = h('div', { class: 'fichas' }, fichaPeople.map(function (p) { return fichaCard(p, ctx); }));
+    if (collapse) {
+      fichas = h('div', null, [fichas, h('button', { type: 'button', class: 'btn more-btn', onClick: function () { ui.allFichas = true; render(); } }, 'Ver as ' + ctx.people.length + ' fichas')]);
+    }
     view.appendChild(section('fichas', 'Pessoas', 'O resultado de cada um', [fichas, h('p', { class: 'caption' }, 'A tag é a categoria que o 12 Axes deu (sem ela, o lado econômico calculado). Personalidade: a mais compatível com o %, depois as outras três. Países: o mais próximo com o %, depois os outros dois. As barrinhas mostram os 12 eixos na ordem do quiz: para cima pende ao primeiro polo (Federal, Democracia, Segurança…), para baixo ao segundo. Passe o mouse para ver o número; clique no nome para abrir a pessoa.')]));
 
     // Alma gêmea e oposto
@@ -1366,28 +1413,28 @@
       h('p', { class: 'caption' }, 'Contagens dos derivados registrados em cada resultado. Nas listas "top", cada pessoa conta uma vez para cada nome da sua lista. São a leitura do site naquele ano; os cálculos do painel não usam esses campos.')
     ]));
 
-    if (netBox) {
+    if (netBox && desktopOnly(netBox, 'net', 'A rede de afinidade')) {
       Charts.network(netBox, ctx, {
         k: g.netK, byCategory: g.netColor === 'side', categoryOrder: CATEGORY_ORDER,
         colorOf: g.netColor === 'side' ? function (p) { return ctx.sideOf(p); } : null
-      }, { onPerson: openPerson });
+      }, { onPerson: chartOpenPerson });
     }
-    Charts.heatmap(heat, ctx, { values: g.values, photos: state.photos }, { onPerson: openPerson });
-    Charts.strips(strip, ctx, { showRef: state.showRef }, { onPerson: openPerson });
+    if (desktopOnly(heat, 'heat', 'O heatmap com todas as pessoas')) Charts.heatmap(heat, ctx, { values: g.values, photos: state.photos }, { onPerson: chartOpenPerson });
+    Charts.strips(strip, ctx, { showRef: state.showRef }, { onPerson: chartOpenPerson });
     Charts.consensus(cons, ctx);
-    if (ctx.people.length >= 2) Charts.affinity(aff, ctx, { values: g.values, photos: state.photos, mode: g.aff }, { onPerson: openPerson });
+    if (ctx.people.length >= 2 && desktopOnly(aff, 'aff', 'A matriz pessoa × pessoa')) Charts.affinity(aff, ctx, { values: g.values, photos: state.photos, mode: g.aff }, { onPerson: chartOpenPerson });
     derivedBoxes.forEach(function (d) { Charts.counts(d.box, d.items); });
     if (meansByYear) {
       Charts.axisLines($('#meanTimeline'), ctx, years, meansByYear, { subtitle: function (y) { return 'n = ' + (nByYear[y] || 0); } });
     }
-    if (mapList.length) {
+    if (mapList.length && desktopOnly(mapBox, 'map', 'O mapa-múndi')) {
       var placeholder = empty('Carregando o mapa…');
       if (!window.Geo.isLoaded()) mapBox.appendChild(placeholder);
       window.Geo.load(function (err) {
         if (!document.body.contains(mapBox)) return; // a view já foi redesenhada
         if (err) { mapBox.replaceWith(note('Não foi possível carregar o mapa-múndi (' + esc(err.message || err) + '). Verifique a conexão.', 'warn')); return; }
         mapBox.innerHTML = '';
-        Charts.worldMap(mapBox, ctx, { items: mapList, photos: state.photos }, { onPerson: openPerson });
+        Charts.worldMap(mapBox, ctx, { items: mapList, photos: state.photos }, { onPerson: chartOpenPerson });
       });
     }
   }
@@ -1404,7 +1451,7 @@
 
     view.appendChild(h('div', { class: 'card controls-card' }, [h('div', { class: 'controls' }, [
       h('label', { class: 'field' }, ['Atributo', select(cats.map(function (d) { return { id: d.key, label: d.label }; }), attrKey, function (v) { set(function (s) { s.compare.attr = v; }); })]),
-      segmented([{ id: 'bars', label: 'Barras divergentes' }, { id: 'radar', label: 'Radar sobreposto' }, { id: 'people', label: 'Pessoas' }], state.compare.mode, function (v) { set(function (s) { s.compare.mode = v; }); }, 'Tipo de gráfico')
+      segmented([{ id: 'bars', label: 'Barras divergentes' }, { id: 'radar', label: 'Radar sobreposto' }], state.compare.mode, function (v) { set(function (s) { s.compare.mode = v; }); }, 'Tipo de gráfico')
     ])]));
 
     if (noPeople(view, ctx)) return;
@@ -1438,12 +1485,45 @@
     }
 
     var box = chartBox('compareChart');
-    var cmpCaption = {
-      bars: 'Barras a partir do centro: para a esquerda, o subgrupo puxa para o polo esquerdo; para a direita, para o polo direito. O rótulo diz o % médio do polo daquele lado.',
-      radar: 'Cada raio mostra o % médio do polo indicado (o polo esquerdo do eixo). O anel do meio é o centro (50).',
-      people: 'Um ponto por pessoa em cada eixo, na cor do seu subgrupo; o losango é a média do subgrupo. O polo esquerdo fica à esquerda. Passe o mouse numa pessoa para acender os 12 pontos dela; clique para abrir a visão individual. Clique na legenda para esconder ou mostrar um subgrupo.'
-    }[state.compare.mode] || '';
-    view.appendChild(section('comparacao', def.label, state.compare.mode === 'people' ? 'Cada pessoa, por subgrupo' : 'Média de cada subgrupo por eixo', [
+    var isRadar = state.compare.mode === 'radar';
+    var rShow = state.compare.radarShow;
+    var rSel = state.compare.radarSel; // null = todas
+    var picker = null;
+    if (isRadar) {
+      var isOn = function (p) { return !rSel || rSel.indexOf(p.id) >= 0; };
+      var toggleIds = function (ids, on) {
+        set(function (s) {
+          var cur = s.compare.radarSel ? s.compare.radarSel.slice() : ctx.people.map(function (p) { return p.id; });
+          ids.forEach(function (id) { var i = cur.indexOf(id); if (on && i < 0) cur.push(id); if (!on && i >= 0) cur.splice(i, 1); });
+          s.compare.radarSel = cur.length === ctx.people.length ? null : cur;
+        });
+      };
+      picker = h('div', { class: 'radar-picker' }, [
+        h('div', { class: 'radar-picker-top' }, [
+          segmented([{ id: 'both', label: 'Pessoas e médias' }, { id: 'people', label: 'Só pessoas' }, { id: 'means', label: 'Só médias' }], rShow, function (v) { set(function (s) { s.compare.radarShow = v; }); }, 'O que mostrar'),
+          rShow !== 'means' ? h('div', { class: 'btn-row' }, [
+            h('button', { type: 'button', class: 'small', onClick: function () { set(function (s) { s.compare.radarSel = null; }); } }, 'Todas'),
+            h('button', { type: 'button', class: 'small', onClick: function () { set(function (s) { s.compare.radarSel = []; }); } }, 'Nenhuma')
+          ]) : null
+        ]),
+        rShow !== 'means' ? h('div', { class: 'radar-groups' }, groups.map(function (g) {
+          var allOn = g.people.every(isOn);
+          return h('div', { class: 'radar-group' }, [
+            h('button', { type: 'button', class: 'radar-group-name', title: allOn ? 'Esconder este subgrupo' : 'Mostrar este subgrupo', onClick: function () { toggleIds(g.people.map(function (p) { return p.id; }), !allOn); } },
+              [h('span', { class: 'dot', style: 'background:' + g.color }), g.label + ' (n = ' + g.n + ')']),
+            h('div', { class: 'radar-chips' }, g.people.map(function (p) {
+              var on = isOn(p);
+              return h('button', { type: 'button', class: 'rchip' + (on ? ' on' : ''), style: '--gc:' + g.color, 'aria-pressed': on ? 'true' : 'false', onClick: function () { toggleIds([p.id], !on); } }, nameOf(p));
+            }))
+          ]);
+        })) : null
+      ]);
+    }
+    var cmpCaption = isRadar
+      ? 'Cada raio é o % do polo indicado (o polo esquerdo do eixo); o anel do meio é o centro (50). Contornos finos são pessoas, na cor do subgrupo; contornos grossos são as médias. Passe o mouse para destacar um contorno; clique numa pessoa para abrir a visão individual. Use os nomes acima para escolher quem aparece; clique no nome do subgrupo para ligar ou desligar todos dele.'
+      : 'Barras a partir do centro: para a esquerda, o subgrupo puxa para o polo esquerdo; para a direita, para o polo direito. O rótulo diz o % médio do polo daquele lado.';
+    view.appendChild(section('comparacao', def.label, isRadar ? 'Pessoas e médias por subgrupo' : 'Média de cada subgrupo por eixo', [
+      picker,
       box,
       h('p', { class: 'caption' }, cmpCaption)
     ]));
@@ -1467,8 +1547,7 @@
     ]);
     view.appendChild(section('tabela', 'Números', 'Média (polo dominante) ± desvio padrão', h('div', { class: 'table-wrap' }, table)));
 
-    if (state.compare.mode === 'people') Charts.compareStrips(box, ctx, groups, { onPerson: openPerson });
-    else if (state.compare.mode === 'radar') Charts.compareRadar(box, ctx, groups);
+    if (isRadar) Charts.compareRadar(box, ctx, groups, { show: rShow, selected: rSel }, { onPerson: chartOpenPerson });
     else Charts.compareBars(box, ctx, groups);
   }
 
@@ -1489,14 +1568,14 @@
         h('span', { class: 'itag lvl' + it.level }, it.label + (it.level ? ' · ' + Stats.dominantPole(axis, value) : ''))
       ]),
       h('div', { class: 'axis-meter' }, [
-        h('div', { class: 'pole' + (leftWins ? ' win' : '') }, [h('b', null, axis.leftPole), h('em', null, fmt(value, d) + '%')]),
+        h('div', { class: 'pole' + (leftWins ? ' win' : '') }, [h('b', { title: axis.leftPole }, [h('span', { class: 'pn-full' }, axis.leftPole), h('span', { class: 'pn-short' }, Charts.shortPole(axis.leftPole))]), h('em', null, fmt(value, d) + '%')]),
         h('div', { class: 'track', role: 'img', 'aria-label': axis.name + ': ' + axis.leftPole + ' ' + fmt(value, d) + '%, ' + axis.rightPole + ' ' + fmt(right, d) + '%' }, [
           h('i', { class: 'mid' }),
           h('i', { class: 'fill', style: 'left:' + fillLeft + '%;width:' + fillW + '%' }),
           meanValue === null || meanValue === undefined ? null : h('i', { class: 'mean', style: 'left:' + (100 - meanValue) + '%', title: 'Média do filtro: ' + axis.leftPole + ' ' + fmt(meanValue, 1) }),
           h('i', { class: 'dot', style: 'left:' + pos + '%' })
         ]),
-        h('div', { class: 'pole right' + (rightWins ? ' win' : '') }, [h('b', null, axis.rightPole), h('em', null, fmt(right, d) + '%')])
+        h('div', { class: 'pole right' + (rightWins ? ' win' : '') }, [h('b', { title: axis.rightPole }, [h('span', { class: 'pn-full' }, axis.rightPole), h('span', { class: 'pn-short' }, Charts.shortPole(axis.rightPole))]), h('em', null, fmt(right, d) + '%')])
       ])
     ]);
   }
@@ -1893,7 +1972,8 @@
       h('dt', null, 'Faixas por eixo'), h('dd', null, 'Um ponto por pessoa em cada eixo, com o polo esquerdo à esquerda. O losango é a média do filtro; com filtro ativo, o losango vazado é a média do grupo inteiro.'),
       h('dt', null, 'Consenso vs divisão'), h('dd', null, 'Desvio padrão (populacional) de cada eixo: quanto menor, mais o grupo concorda.'),
       h('dt', null, 'Matriz de afinidade'), h('dd', null, 'Similaridade entre duas pessoas = 100 × (1 − distância euclidiana ÷ distância máxima possível). A distância máxima é √12 × 100 ≈ 346.'),
-      h('dt', null, 'Comparar subgrupos'), h('dd', null, 'Média por eixo de cada valor de um atributo categórico, em barras ou radar. No modo "Pessoas", cada pessoa vira um ponto em cada eixo, na cor do subgrupo, com a média como losango; passe o mouse para acender os 12 pontos de uma pessoa. Subgrupos com menos de 3 pessoas são sinalizados.'),
+      h('dt', null, 'Comparar subgrupos'), h('dd', null, 'Média por eixo de cada valor de um atributo categórico, em barras ou radar. No radar, cada pessoa é um contorno fino na cor do subgrupo e a média é o contorno grosso; escolha quem aparece clicando nos nomes. Subgrupos com menos de 3 pessoas são sinalizados.'),
+      h('dt', null, 'No celular'), h('dd', null, 'Gráficos que precisam de tela larga mostram um aviso "Melhor no computador", com a opção de ver assim mesmo (com rolagem lateral) ou girar o celular. Em tela de toque, o primeiro toque num ponto mostra os detalhes e o segundo abre a pessoa.'),
       h('dt', null, 'Visão individual'), h('dd', null, 'Linhas por eixo com a marca da média do filtro; o eixo em que a pessoa mais se afasta e mais se parece com o grupo; radar; convicção; as 3 pessoas mais próximas e mais distantes; e, com mais de um ano, a evolução por eixo.'),
       h('dt', null, 'PCA'), h('dd', null, 'Análise de componentes principais calculada em JavaScript a partir da matriz de covariância dos 12 eixos das pessoas filtradas. Os componentes são as direções de maior variação; o painel mostra quais eixos mais pesam em cada um.')
     ])));
@@ -1918,16 +1998,20 @@
     // Espera as fontes da web (Sora/Poppins) carregarem antes de desenhar, com
     // limite de 1,5 s para funcionar também sem internet.
     var started = false;
-    function start() { if (started) return; started = true; render(); }
-    if (document.fonts && document.fonts.load) {
-      Promise.all([
-        document.fonts.load('400 12px Poppins'), document.fonts.load('600 12px Poppins'),
-        document.fonts.load('700 12px Sora'), document.fonts.load('800 12px Sora')
-      ]).then(start, start);
-      setTimeout(start, 1500);
-    } else {
-      start();
+    function start() { if (started) return; started = true; ready = true; render(); }
+    function boot() {
+      if (document.fonts && document.fonts.load) {
+        Promise.all([
+          document.fonts.load('400 12px Poppins'), document.fonts.load('600 12px Poppins'),
+          document.fonts.load('700 12px Sora'), document.fonts.load('800 12px Sora')
+        ]).then(start, start);
+        setTimeout(start, 1500);
+      } else {
+        start();
+      }
     }
+    // Senha de entrada (js/auth.js): nada é desenhado antes dela.
+    if (window.Auth) window.Auth.whenUnlocked(boot); else boot();
     window.addEventListener('hashchange', function () { state = readHash(); render(); });
     var resizeTimer = null;
     window.addEventListener('resize', function () {

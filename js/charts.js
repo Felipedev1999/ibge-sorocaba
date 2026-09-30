@@ -82,10 +82,13 @@
   }
 
   // Formatador de tiques para um eixo dos 12 (valor = % do polo esquerdo).
-  function poleTick(axis, compact) {
+  // numbersOnly: só números (usado no celular quando os quadrantes nomeados já
+  // dizem qual polo é qual).
+  function poleTick(axis, compact, numbersOnly) {
     var L = axis.tickLeft || axis.leftPole, R = axis.tickRight || axis.rightPole;
     return function (v) {
       v = Math.round(v * 10) / 10;
+      if (numbersOnly) return v === 50 ? '50' : fmt(v > 50 ? v : 100 - v);
       if (v === 50) return compact ? '50' : 'centro';
       if (v > 50) return (compact && v !== 100) ? fmt(v) : L + ' ' + fmt(v);
       return (compact && v !== 0) ? fmt(100 - v) : R + ' ' + fmt(100 - v);
@@ -115,9 +118,36 @@
       '<table class="tt-table">' + rows.join('') + '</table></div>';
   }
 
+  // Tela de toque (sem mouse): o primeiro toque mostra o tooltip, o segundo abre.
+  function isTouch() {
+    return !!(window.matchMedia && window.matchMedia('(hover: none)').matches);
+  }
+  function openHint() {
+    return isTouch() ? 'Toque de novo para abrir a visão individual' : 'Clique para abrir a visão individual';
+  }
+  function reducedMotion() {
+    return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  }
+  // Tela estreita (celular em pé).
+  function narrow(el) {
+    return (el ? el.clientWidth : window.innerWidth) < 560;
+  }
+
+  // Nomes de polo curtos para telas estreitas (até ~11 caracteres).
+  var SHORT_POLES = {
+    'Multiculturalismo': 'Multicult.', 'Multicultura': 'Multicult.', 'Não intervencionista': 'Não interv.',
+    'Tradicionalista': 'Tradicion.', 'Livre mercado': 'Livre merc.', 'Planejamento': 'Planejam.',
+    'Protecionismo': 'Protecion.', 'Nacionalista': 'Nacional.', 'Assimilação': 'Assimil.'
+  };
+  function shortPole(name) {
+    if (SHORT_POLES[name]) return SHORT_POLES[name];
+    return name && name.length > 11 ? name.slice(0, 10).trim() + '.' : name;
+  }
+
   function baseOption(t) {
     return {
       textStyle: { fontFamily: t.font, color: t.text },
+      animation: !reducedMotion(),
       animationDuration: 320,
       animationDurationUpdate: 240,
       tooltip: {
@@ -150,9 +180,13 @@
   }
 
   function legend(t, extra) {
+    // Em tela estreita e com poucos itens, a legenda quebra linha em vez de paginar.
+    var count = extra && extra.data ? extra.data.length : 0;
+    var wrap = narrow() && count > 0 && count <= 6;
     return Object.assign({
-      top: 0, type: 'scroll', icon: 'circle', itemWidth: 10, itemHeight: 10, itemGap: 16,
-      textStyle: { color: t.text, fontSize: 12 }, pageTextStyle: { color: t.muted }, pageIconColor: t.text, pageIconInactiveColor: t.faint
+      top: 0, type: wrap ? 'plain' : 'scroll', icon: 'circle', itemWidth: 10, itemHeight: 10, itemGap: wrap ? 10 : 16,
+      left: wrap ? 0 : 'center', right: wrap ? 0 : 'auto',
+      textStyle: { color: t.text, fontSize: wrap ? 11 : 12 }, pageTextStyle: { color: t.muted }, pageIconColor: t.text, pageIconInactiveColor: t.faint
     }, extra || {});
   }
 
@@ -303,7 +337,7 @@
   //        groupColor(value), labels, trails, sizeLabel }
   // Metric: { id, label, isAxis, axis, min, max, value(personId, year) }
   // ---------------------------------------------------------------------------
-  function metricAxisOption(t, m, orientation, compact) {
+  function metricAxisOption(t, m, orientation, compact, numbersOnly) {
     var isX = orientation === 'x';
     var opt = valueAxis(t, {
       name: m.label,
@@ -319,7 +353,7 @@
     if (m.isAxis) {
       opt.min = 0; opt.max = 100; opt.interval = 25;
       opt.inverse = isX;
-      opt.axisLabel = Object.assign({}, opt.axisLabel, { formatter: poleTick(m.axis, compact) });
+      opt.axisLabel = Object.assign({}, opt.axisLabel, { formatter: poleTick(m.axis, compact, numbersOnly) });
       // Rótulos das pontas alinhados para dentro, para não serem cortados.
       if (isX) { opt.axisLabel.alignMinLabel = 'right'; opt.axisLabel.alignMaxLabel = 'left'; }
       else { opt.axisLabel.verticalAlignMinLabel = 'bottom'; opt.axisLabel.verticalAlignMaxLabel = 'top'; }
@@ -485,10 +519,10 @@
     }
 
     var option = Object.assign(baseOption(t), {
-      grid: { left: 18, right: compact ? 44 : 36, top: useLegend ? 64 : 40, bottom: 44, containLabel: true },
+      grid: { left: 18, right: compact ? 44 : 36, top: useLegend ? (narrow(el) ? 88 : 64) : 40, bottom: 44, containLabel: true },
       legend: useLegend ? legend(t, { selectedMode: 'multiple', data: seriesList.filter(function (s) { return s.type === 'scatter' && s.id !== 'labels'; }).map(function (s) { return s.name; }) }) : undefined,
-      xAxis: metricAxisOption(t, xm, 'x', compact),
-      yAxis: metricAxisOption(t, ym, 'y', compact),
+      xAxis: metricAxisOption(t, xm, 'x', compact, compact && xm.isAxis && ym.isAxis),
+      yAxis: metricAxisOption(t, ym, 'y', compact, compact && xm.isAxis && ym.isAxis),
       series: seriesList
     });
     option.tooltip.trigger = 'item';
@@ -500,7 +534,7 @@
         esc(ym.label) + ': <b>' + fmt(params.data.value[1], ym.isAxis && !ym.composite ? (r.precision || 0) : 1) + '</b>' +
         (cfg.sizeLabel && params.data.value[2] !== null && params.data.value[2] !== undefined ? ' · ' + esc(cfg.sizeLabel) + ': <b>' + fmt(params.data.value[2], 1) + '</b>' : '') +
         (cfg.groupOf ? ' · ' + esc(params.seriesName) : '');
-      return personTooltip(ctx, p, r, extra) + '<div class="tt-foot">Clique para abrir a visão individual</div>';
+      return personTooltip(ctx, p, r, extra) + '<div class="tt-foot">' + openHint() + '</div>';
     };
     var chart = mount(el, option, {
       click: function (params) {
@@ -570,8 +604,8 @@
           interval: 0, rich: richPoles(t), margin: 12,
           formatter: function (key) {
             var a = ctx.axisByKey(key);
-            if (side === 'left') return compact ? '{l|' + a.leftPole + '}' : '{n|' + a.name + '}\n{l|' + a.leftPole + '}';
-            return '{r|' + a.rightPole + '}';
+            if (side === 'left') return compact ? '{l|' + shortPole(a.leftPole) + '}' : '{n|' + a.name + '}\n{l|' + a.leftPole + '}';
+            return '{r|' + (compact ? shortPole(a.rightPole) : a.rightPole) + '}';
           }
         }
       });
@@ -666,8 +700,8 @@
           interval: 0, rich: richPoles(t), margin: 12,
           formatter: function (key) {
             var a = ctx.axisByKey(key);
-            if (side === 'left') return compact ? '{l|' + a.leftPole + '}' : '{n|' + a.name + '}\n{l|' + a.leftPole + '}';
-            return '{r|' + a.rightPole + '}';
+            if (side === 'left') return compact ? '{l|' + shortPole(a.leftPole) + '}' : '{n|' + a.name + '}\n{l|' + a.leftPole + '}';
+            return '{r|' + (compact ? shortPole(a.rightPole) : a.rightPole) + '}';
           }
         }
       });
@@ -697,9 +731,9 @@
       grid: { left: 12, right: 12, top: 40, bottom: 12, containLabel: true },
       legend: legend(t, { top: 0, left: 'center', data: series.map(function (s) { return s.name; }) }),
       xAxis: valueAxis(t, {
-        min: 0, max: 100, interval: 25, inverse: true,
+        min: 0, max: 100, interval: compact ? 50 : 25, inverse: true,
         axisLabel: {
-          color: t.muted, fontSize: 11,
+          color: t.muted, fontSize: compact ? 10 : 11, alignMinLabel: 'right', alignMaxLabel: 'left',
           formatter: function (v) {
             if (v === 50) return 'centro';
             if (v > 50) return fmt(v) + '% esq.';
@@ -879,8 +913,8 @@
           interval: 0, rich: richPoles(t), margin: 12,
           formatter: function (key) {
             var a = ctx.axisByKey(key);
-            if (side === 'left') return compact ? '{l|' + a.leftPole + '}' : '{n|' + a.name + '}\n{l|' + a.leftPole + '}';
-            return '{r|' + a.rightPole + '}';
+            if (side === 'left') return compact ? '{l|' + shortPole(a.leftPole) + '}' : '{n|' + a.name + '}\n{l|' + a.leftPole + '}';
+            return '{r|' + (compact ? shortPole(a.rightPole) : a.rightPole) + '}';
           }
         }
       });
@@ -888,8 +922,10 @@
     return [make('left'), make('right')];
   }
 
-  function centeredXAxis(t) {
-    return valueAxis(t, { min: -50, max: 50, interval: 25, axisLabel: { color: t.muted, fontSize: 11, formatter: centeredTick } });
+  // Em tela estreita só marca os extremos e o centro, para os rótulos não se encavalarem.
+  function centeredXAxis(t, el) {
+    var n = narrow(el);
+    return valueAxis(t, { min: -50, max: 50, interval: n ? 50 : 25, axisLabel: { color: t.muted, fontSize: n ? 10 : 11, formatter: centeredTick, alignMinLabel: 'left', alignMaxLabel: 'right' } });
   }
 
   function compareBars(el, ctx, groups) {
@@ -907,9 +943,9 @@
       series[0].markLine = { silent: true, symbol: 'none', label: { show: false }, lineStyle: { color: t.axis, width: 1 }, data: [{ xAxis: 0 }] };
     }
     var option = Object.assign(baseOption(t), {
-      grid: { left: 12, right: 12, top: 56, bottom: 12, containLabel: true },
+      grid: { left: 12, right: 12, top: narrow(el) ? 80 : 56, bottom: 12, containLabel: true },
       legend: legend(t, { icon: 'roundRect', data: series.map(function (s) { return s.name; }) }),
-      xAxis: centeredXAxis(t),
+      xAxis: centeredXAxis(t, el),
       yAxis: poleYAxes(t, ctx, compact),
       series: series
     });
@@ -920,15 +956,17 @@
     return mount(el, option);
   }
 
-  function radarIndicators(ctx, t) {
-    return ctx.axes.map(function (a) { return { name: a.leftPole + '\n' + a.name, max: 100, min: 0 }; });
+  // Cada raio mede o % do polo esquerdo. No celular mostra só o nome curto do
+  // polo, numa linha, para não cortar nas bordas.
+  function radarIndicators(ctx, compact) {
+    return ctx.axes.map(function (a) { return { name: compact ? shortPole(a.leftPole) : a.leftPole + '\n' + a.name, max: 100, min: 0 }; });
   }
 
   function radarBase(t, ctx, el) {
     var compact = el.clientWidth < 560;
     return {
-      indicator: radarIndicators(ctx, t),
-      splitNumber: 4, radius: compact ? '52%' : '62%', center: ['50%', '55%'],
+      indicator: radarIndicators(ctx, compact),
+      splitNumber: 4, radius: compact ? '60%' : '62%', center: ['50%', '55%'],
       axisName: { color: t.muted, fontSize: compact ? 10 : 11, lineHeight: 13 },
       splitLine: { lineStyle: { color: t.grid } },
       splitArea: { show: false },
@@ -936,29 +974,65 @@
     };
   }
 
-  function compareRadar(el, ctx, groups) {
+  // Radar dos subgrupos. cfg.show: 'both' (pessoas + médias) | 'people' | 'means';
+  // cfg.selected: ids das pessoas a desenhar (null = todas). Cada pessoa é um
+  // contorno fino na cor do subgrupo; a média do subgrupo é o contorno grosso.
+  // Passar o mouse destaca um contorno e apaga os outros.
+  function compareRadar(el, ctx, groups, cfg, handlers) {
+    cfg = cfg || {};
     var t = theme();
-    el.style.height = (el.clientWidth < 560 ? 420 : 520) + 'px';
+    var show = cfg.show || 'both';
+    var sel = cfg.selected;
+    el.style.height = (el.clientWidth < 560 ? 360 : 560) + 'px';
+    var data = [];
+    if (show !== 'means') {
+      groups.forEach(function (g) {
+        g.people.forEach(function (p) {
+          if (sel && sel.indexOf(p.id) < 0) return;
+          var v = ctx.vec(p.id, ctx.year);
+          data.push({
+            value: v.map(function (x) { return Stats.round(x, 1); }), name: ctx.name(p), personId: p.id, groupLabel: g.label,
+            symbol: 'none',
+            lineStyle: { color: g.color, width: 1.4, opacity: 0.7 },
+            itemStyle: { color: g.color },
+            areaStyle: { opacity: 0 },
+            emphasis: { lineStyle: { width: 3.5, opacity: 1 }, areaStyle: { color: g.color, opacity: 0.12 } }
+          });
+        });
+      });
+    }
+    if (show !== 'people') {
+      groups.forEach(function (g) {
+        data.push({
+          value: g.mean.map(function (m) { return Stats.round(m, 1); }), name: 'Média · ' + g.label + ' (n = ' + g.n + ')', groupLabel: g.label, isMean: true,
+          symbol: 'circle', symbolSize: 6,
+          lineStyle: { color: g.color, width: 3.5, type: 'solid' }, itemStyle: { color: g.color, borderColor: t.surface, borderWidth: 1 },
+          areaStyle: { color: g.color, opacity: show === 'means' ? 0.1 : 0.05 },
+          emphasis: { lineStyle: { width: 5 } }
+        });
+      });
+    }
     var option = Object.assign(baseOption(t), {
-      legend: legend(t, { data: groups.map(function (g) { return g.label + ' (n = ' + g.n + ')'; }) }),
       radar: radarBase(t, ctx, el),
       series: [{
-        type: 'radar', symbol: 'circle', symbolSize: 6,
-        data: groups.map(function (g) {
-          return {
-            value: g.mean.map(function (m) { return Stats.round(m, 1); }), name: g.label + ' (n = ' + g.n + ')',
-            lineStyle: { color: g.color, width: 2 }, itemStyle: { color: g.color, borderColor: t.surface, borderWidth: 1 },
-            areaStyle: { color: g.color, opacity: 0.08 }
-          };
-        })
+        type: 'radar', data: data,
+        emphasis: { focus: 'self' },
+        blur: { lineStyle: { opacity: 0.08 }, areaStyle: { opacity: 0 }, itemStyle: { opacity: 0.1 } }
       }]
     });
+    option.radar.center = ['50%', '52%'];
     option.tooltip.trigger = 'item';
     option.tooltip.formatter = function (p) {
-      var rows = ctx.axes.map(function (a, i) { return '<tr><td class="tt-axis">' + esc(a.name) + '</td><td>' + poleLabel(a, p.data.value[i], 1) + '</td></tr>'; });
-      return '<b>' + esc(p.name) + '</b><table class="tt-table">' + rows.join('') + '</table>';
+      var d = p.data.isMean ? 1 : ((ctx.result(p.data.personId, ctx.year) || {}).precision || 0);
+      var rows = ctx.axes.map(function (a, i) { return '<tr><td class="tt-axis">' + esc(a.name) + '</td><td>' + poleLabel(a, p.data.value[i], d) + '</td></tr>'; });
+      return '<b>' + esc(p.name) + '</b>' + (p.data.isMean ? '' : '<div class="tt-muted">' + esc(p.data.groupLabel) + '</div>') +
+        '<table class="tt-table">' + rows.join('') + '</table>' + (p.data.personId ? '<div class="tt-foot">' + openHint() + '</div>' : '');
     };
-    return mount(el, option);
+    return mount(el, option, {
+      click: function (params) {
+        if (params.data && params.data.personId && handlers && handlers.onPerson) handlers.onPerson(params.data.personId);
+      }
+    });
   }
 
   // ---------------------------------------------------------------------------
@@ -1040,10 +1114,10 @@
       series: [{
         type: 'graph', layout: 'force', roam: true, draggable: true,
         data: nodes, links: links, categories: cfg.byCategory ? cats : undefined,
-        top: cfg.byCategory && cats.length > 1 ? 50 : 20, bottom: 20, left: 30, right: 90,
+        top: cfg.byCategory && cats.length > 1 ? (narrow(el) ? 70 : 50) : 20, bottom: 20, left: narrow(el) ? 10 : 30, right: narrow(el) ? 60 : 90,
         // Repulsão proporcional ao tamanho do grupo e gravidade alta, para as
         // turmas soltas (1 vizinho) não fugirem do quadro.
-        force: { repulsion: Math.max(80, Math.min(220, 2600 / Math.max(1, n))), gravity: 0.3, edgeLength: [30, 110], friction: 0.15, layoutAnimation: true },
+        force: { repulsion: Math.max(80, Math.min(220, 2600 / Math.max(1, n))), gravity: 0.3, edgeLength: [30, 110], friction: 0.15, layoutAnimation: !reducedMotion() },
         label: { show: true, position: 'right', color: t.text, fontSize: 11, formatter: function (p) { return p.data.name; } },
         labelLayout: { hideOverlap: true },
         emphasis: { focus: 'adjacency', lineStyle: { width: 5, opacity: 0.9 }, label: { fontWeight: 700 } },
@@ -1065,7 +1139,7 @@
         (p.data.sideLabel ? '<span class="tt-year">' + esc(p.data.sideLabel) + '</span>' : '') + '</div>' +
         '<div class="tt-muted">Convicção ' + fmt(p.data.mag, 1) + ' · mais próximos:</div>' +
         near.map(function (x) { return '<div>' + esc(ctx.name(people[x.j])) + ' <span class="tt-muted">' + fmt(x.d, 1) + '</span></div>'; }).join('') +
-        '<div class="tt-foot">Clique para abrir a visão individual · arraste para mover</div>';
+        '<div class="tt-foot">' + openHint() + ' · arraste para mover</div>';
     };
     return mount(el, option, {
       click: function (params) {
@@ -1074,132 +1148,12 @@
     });
   }
 
-  // Pessoas individualmente: um ponto por pessoa em cada eixo, na cor do
-  // subgrupo, com a média do subgrupo como losango. Passar o mouse numa pessoa
-  // acende os 12 pontos dela; clicar abre a visão individual.
-  function compareStrips(el, ctx, groups, handlers) {
-    var t = theme();
-    var n = ctx.axes.length;
-    var total = groups.reduce(function (s, g) { return s + g.n; }, 0);
-    var rowH = total > 16 ? 58 : 48;
-    el.style.height = (n * rowH + 110) + 'px';
-    var compact = el.clientWidth < 700;
-    var plotWidth = Math.max(200, el.clientWidth - (compact ? 190 : 300));
-    var symbol = 11;
-    var minGap = 100 / plotWidth * (symbol + 1);
-
-    // Deslocamento vertical (beeswarm) calculado com todas as pessoas juntas,
-    // para pontos de subgrupos diferentes também não se sobreporem.
-    var offsets = {}; // personId|axis -> offset
-    ctx.axes.forEach(function (a, i) {
-      var entries = [];
-      groups.forEach(function (g) { g.people.forEach(function (p) { entries.push({ p: p, v: ctx.vec(p.id, ctx.year)[i] }); }); });
-      var offs = swarm(entries.map(function (e) { return e.v; }), minGap, 0.12, 0.4);
-      entries.forEach(function (e, k) { offsets[e.p.id + '|' + i] = offs[k]; });
-    });
-
-    var labelOf = function (g) { return g.label + ' (n = ' + g.n + ')'; };
-    var series = [];
-    groups.forEach(function (g) {
-      var data = [];
-      g.people.forEach(function (p) {
-        var v = ctx.vec(p.id, ctx.year);
-        ctx.axes.forEach(function (a, i) {
-          data.push({ value: [v[i], i + offsets[p.id + '|' + i]], personId: p.id, axisIndex: i });
-        });
-      });
-      series.push({
-        type: 'scatter', name: labelOf(g), data: data, symbolSize: symbol, z: 3, yAxisIndex: 2,
-        itemStyle: { color: g.color, borderColor: t.surface, borderWidth: 1.5, opacity: 0.9 },
-        emphasis: { scale: 1.6, itemStyle: { borderColor: t.text, borderWidth: 2, opacity: 1 } }
-      });
-      series.push({
-        type: 'scatter', name: labelOf(g), isMean: true, symbol: 'diamond', symbolSize: 17, z: 5, yAxisIndex: 2,
-        data: g.mean.map(function (m, i) { return { value: [m, i], axisIndex: i, group: g }; }),
-        itemStyle: { color: g.color, borderColor: t.text, borderWidth: 1.5 }
-      });
-    });
-    var bands = [];
-    for (var b = 0; b < n; b += 2) bands.push([{ yAxis: b - 0.5 }, { yAxis: b + 0.5 }]);
-    if (series.length) {
-      series[0].markLine = { silent: true, symbol: 'none', label: { show: false }, lineStyle: { color: t.axis, type: 'dashed', width: 1 }, data: [{ xAxis: 50 }] };
-      series[0].markArea = { silent: true, itemStyle: { color: t.band }, data: bands };
-    }
-
-    function labelAxis(side) {
-      return categoryAxis(t, {
-        inverse: true, position: side, data: ctx.axes.map(function (a) { return a.key; }),
-        axisLabel: {
-          interval: 0, rich: richPoles(t), margin: 12,
-          formatter: function (key) {
-            var a = ctx.axisByKey(key);
-            if (side === 'left') return compact ? '{l|' + a.leftPole + '}' : '{n|' + a.name + '}\n{l|' + a.leftPole + '}';
-            return '{r|' + a.rightPole + '}';
-          }
-        }
-      });
-    }
-    var option = Object.assign(baseOption(t), {
-      grid: { left: 12, right: 12, top: 56, bottom: 12, containLabel: true },
-      legend: legend(t, { data: groups.map(labelOf) }),
-      xAxis: valueAxis(t, {
-        min: 0, max: 100, interval: 25, inverse: true,
-        axisLabel: {
-          color: t.muted, fontSize: 11,
-          formatter: function (v) { return v === 50 ? 'centro' : v > 50 ? fmt(v) + '% esq.' : fmt(100 - v) + '% dir.'; }
-        }
-      }),
-      yAxis: [labelAxis('left'), labelAxis('right'), valueAxis(t, { min: -0.5, max: n - 0.5, inverse: true, show: false, splitLine: { show: false } })],
-      series: series
-    });
-    option.tooltip.trigger = 'item';
-    option.tooltip.formatter = function (params) {
-      var a = ctx.axes[params.data.axisIndex];
-      var v = params.data.value[0];
-      if (params.data.personId) {
-        var p = ctx.personById(params.data.personId);
-        var r = ctx.result(p.id, ctx.year);
-        var it = Stats.intensity(v);
-        return '<div class="tt-head"><span class="tt-dot" style="background:' + params.color + '"></span><b>' + esc(ctx.name(p)) + '</b></div>' +
-          '<div class="tt-muted">' + esc(params.seriesName) + '</div>' +
-          '<div><b>' + esc(a.name) + '</b>: ' + poleLabel(a, v, r.precision || 0) + '</div>' +
-          '<div class="tt-muted">' + it.label + (it.level ? ' · ' + esc(Stats.dominantPole(a, v)) : '') + '</div>' +
-          '<div class="tt-foot">Clique para abrir a visão individual</div>';
-      }
-      return '<b>Média · ' + esc(params.seriesName) + '</b><br>' + esc(a.name) + ': ' + poleLabel(a, v, 1);
-    };
-    var chart = mount(el, option, {
-      click: function (params) {
-        if (params.data && params.data.personId && handlers && handlers.onPerson) handlers.onPerson(params.data.personId);
-      }
-    });
-    // Acende os 12 pontos da pessoa sob o mouse.
-    var lit = null;
-    function indicesOf(seriesIndex, pid) {
-      var out = [];
-      series[seriesIndex].data.forEach(function (d, k) { if (d.personId === pid) out.push(k); });
-      return out;
-    }
-    chart.on('mouseover', function (params) {
-      if (!params.data || !params.data.personId) return;
-      if (lit) chart.dispatchAction({ type: 'downplay', seriesIndex: lit.s, dataIndex: lit.idx });
-      lit = { s: params.seriesIndex, idx: indicesOf(params.seriesIndex, params.data.personId) };
-      chart.dispatchAction({ type: 'highlight', seriesIndex: lit.s, dataIndex: lit.idx });
-    });
-    chart.on('mouseout', function (params) {
-      if (!lit || !params.data || !params.data.personId) return;
-      chart.dispatchAction({ type: 'downplay', seriesIndex: lit.s, dataIndex: lit.idx });
-      lit = null;
-    });
-    return chart;
-  }
-
   // ---------------------------------------------------------------------------
   // 4. Visão individual
   // ---------------------------------------------------------------------------
   function personRadar(el, ctx, person) {
     var t = theme();
-    el.style.height = (el.clientWidth < 560 ? 400 : 480) + 'px';
+    el.style.height = (el.clientWidth < 560 ? 380 : 480) + 'px';
     var vec = ctx.vec(person.id, ctx.year);
     var r = ctx.result(person.id, ctx.year);
     var data = [{
@@ -1274,7 +1228,7 @@
     var option = Object.assign(baseOption(t), {
       grid: { left: 12, right: 12, top: 52, bottom: 12, containLabel: true },
       legend: legend(t, { data: series.map(function (s) { return s.name; }), icon: 'roundRect' }),
-      xAxis: centeredXAxis(t),
+      xAxis: centeredXAxis(t, el),
       yAxis: poleYAxes(t, ctx, compact),
       series: series
     });
@@ -1445,6 +1399,9 @@
   }
 
   global.Charts = {
+    isTouch: isTouch,
+    shortPole: shortPole,
+    narrow: narrow,
     worldMap: worldMap,
     PALETTE: PALETTE,
     DIVERGING: DIVERGING,
@@ -1466,7 +1423,6 @@
     counts: counts,
     compareBars: compareBars,
     compareRadar: compareRadar,
-    compareStrips: compareStrips,
     network: network,
     personRadar: personRadar,
     personBars: personBars,
