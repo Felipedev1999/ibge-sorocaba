@@ -1,0 +1,24 @@
+# Configuração local de ferramentas (pré-visualização do Claude Code etc.)
+.claude/
+
+# Sistema operacional / editores
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.tmp
+~$*
+.vscode/
+.idea/
+
+# Planilhas e prints originais ficam fora do repositório por padrão
+# (contêm dados pessoais; remova estas linhas se quiser versioná-los)
+*.xlsx
+*.xls
+data/prints/**/*.png
+data/prints/**/*.jpg
+data/prints/**/*.jpeg
+data/prints/**/*.webp
+data/photos/*.jpg
+data/photos/*.jpeg
+data/photos/*.png
+data/photos/*.webp
