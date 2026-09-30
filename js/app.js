@@ -250,7 +250,7 @@
       filters: Filters.defaultState(),
       showRef: true,
       explorer: { x: 'axis:economia', y: 'axis:moral', color: 'person', size: 'fixed', labels: true, trails: false, sim: null },
-      group: { values: true, map: 'countryPresent', aff: 'sim', netK: 1, netColor: 'side' },
+      group: { values: true, map: 'countryPresent', aff: 'sim', netK: 1, netColor: 'side', stripColor: 'person' },
       compare: { attr: cats.length ? cats[0].key : null, mode: 'bars', radarShow: 'both', radarSel: null },
       person: null
     };
@@ -286,6 +286,7 @@
     if (state.group.aff === 'dist') p.am = 'd';
     if (state.group.netK !== 1) p.nk = state.group.netK;
     if (state.group.netColor !== 'side') p.nc = state.group.netColor;
+    if (state.group.stripColor !== 'person') p.sc = state.group.stripColor;
     if (state.compare.attr && state.compare.attr !== d.compare.attr) p.cmp = state.compare.attr;
     if (state.compare.mode !== 'bars') p.cm = state.compare.mode;
     if (state.compare.radarShow !== 'both') p.rs = state.compare.radarShow;
@@ -330,6 +331,7 @@
     if (p.am === 'd') s.group.aff = 'dist';
     if (p.nk === '2' || p.nk === '3') s.group.netK = Number(p.nk);
     if (p.nc === 'person') s.group.netColor = 'person';
+    if (p.sc === 'side') s.group.stripColor = 'side';
     if (p.cmp) s.compare.attr = p.cmp;
     if (p.cm === 'radar') s.compare.mode = 'radar';
     if (p.rs === 'people' || p.rs === 'means') s.compare.radarShow = p.rs;
@@ -797,6 +799,121 @@
       opts.pct !== undefined && opts.pct !== null ? h('span', { class: 'pct' }, fmt(opts.pct, opts.pctDecimals || 0) + (opts.pctSuffix === undefined ? '%' : opts.pctSuffix)) : null
     ]);
     return card;
+  }
+
+  // Faixas por eixo em HTML: um avatar com as iniciais por pessoa em cada eixo,
+  // empilhando quem cai no mesmo lugar. Cada linha tem a altura da sua maior
+  // pilha. Devolve { el, layout }: chame layout() depois de inserir no DOM (e o
+  // render inteiro já roda de novo quando a janela muda de tamanho).
+  function stripsView(ctx, opts) {
+    var root = h('div', { class: 'strips' });
+    var tip = h('div', { class: 'strip-tip', role: 'tooltip', hidden: true });
+    var rows = ctx.axes.map(function (a, i) {
+      var track = h('div', { class: 'strip-track' }, [h('i', { class: 'strip-line' }), h('i', { class: 'strip-mid' })]);
+      if (ctx.mean) track.appendChild(h('i', { class: 'strip-mean', style: 'left:' + (100 - ctx.mean[i]) + '%', title: 'Média do filtro: ' + a.leftPole + ' ' + fmt(ctx.mean[i], 1) }));
+      if (opts.showRef && ctx.meanAll) track.appendChild(h('i', { class: 'strip-mean ref', style: 'left:' + (100 - ctx.meanAll[i]) + '%', title: 'Média do grupo inteiro: ' + a.leftPole + ' ' + fmt(ctx.meanAll[i], 1) }));
+      var avs = ctx.people.map(function (p) {
+        var v = ctx.vec(p.id, ctx.year)[i];
+        var color = opts.byCat ? ctx.sideOf(p).color : colorOf(p);
+        var av = Avatars.el(p, 'sm', { color: color, label: nameOf(p), title: false });
+        av.classList.add('strip-av');
+        av.setAttribute('data-pid', p.id);
+        av.setAttribute('tabindex', '0');
+        av.setAttribute('role', 'button');
+        av.setAttribute('aria-label', nameOf(p) + ', ' + a.name + ': ' + a.leftPole + ' ' + fmt(v, 0) + '%, ' + a.rightPole + ' ' + fmt(100 - v, 0) + '%');
+        av.style.left = (100 - v) + '%';
+        var o = { el: av, p: p, v: v, axis: a };
+        av.addEventListener('mouseenter', function () { focusOn(o); });
+        av.addEventListener('focus', function () { focusOn(o); });
+        av.addEventListener('mouseleave', clearFocus);
+        av.addEventListener('blur', clearFocus);
+        av.addEventListener('click', function (e) { e.stopPropagation(); focusOn(o); chartOpenPerson(p.id); });
+        av.addEventListener('keydown', function (e) { if (e.key === 'Enter') openPerson(p.id); });
+        track.appendChild(av);
+        return o;
+      });
+      var row = h('div', { class: 'strip-row' }, [
+        h('div', { class: 'strip-lab left' }, [h('b', null, a.name), h('span', null, a.leftPole)]),
+        track,
+        h('div', { class: 'strip-lab right' }, h('span', null, a.rightPole))
+      ]);
+      root.appendChild(row);
+      return { track: track, avs: avs };
+    });
+    // Régua de baixo, alinhada ao trilho.
+    root.appendChild(h('div', { class: 'strip-row strip-scale' }, [
+      h('div', { class: 'strip-lab left' }),
+      h('div', { class: 'strip-ticks' }, [[0, '100% esq.'], [25, '75% esq.'], [50, 'centro'], [75, '75% dir.'], [100, '100% dir.']].map(function (tk) {
+        return h('span', { class: 'strip-tick', style: 'left:' + tk[0] + '%' }, tk[1]);
+      })),
+      h('div', { class: 'strip-lab right' })
+    ]));
+    if (opts.byCat) {
+      var seen = {};
+      ctx.people.forEach(function (p) { var sd = ctx.sideOf(p); seen[sd.label] = sd.color; });
+      root.insertBefore(h('div', { class: 'strip-legend' }, CATEGORY_ORDER.filter(function (c) { return seen[c]; }).map(function (c) {
+        return h('span', null, [h('i', { style: 'background:' + seen[c] }), c]);
+      })), root.firstChild);
+    }
+    root.appendChild(tip);
+    root.addEventListener('click', clearFocus);
+
+    function focusOn(o) {
+      root.classList.add('hl-on');
+      Array.prototype.forEach.call(root.querySelectorAll('.strip-av'), function (el) {
+        el.classList.toggle('hl', el.getAttribute('data-pid') === o.p.id);
+      });
+      var a = o.axis, it = Stats.intensity(o.v);
+      var r = resultOf(o.p.id, ctx.year) || {};
+      tip.innerHTML = '<b>' + esc(nameOf(o.p)) + '</b><span class="tt-muted"> · ' + esc(ctx.sideOf(o.p).label) + '</span>' +
+        '<div><b>' + esc(a.name) + '</b>: ' + Charts.poleLabel(a, o.v, r.precision || 0) + '</div>' +
+        '<div class="tt-muted">' + it.label + (it.level ? ' · ' + esc(Stats.dominantPole(a, o.v)) : '') + '</div>';
+      tip.hidden = false;
+      var rr = root.getBoundingClientRect(), ar = o.el.getBoundingClientRect();
+      var x = ar.left - rr.left + ar.width / 2, y = ar.top - rr.top;
+      var tw = tip.offsetWidth;
+      tip.style.left = Math.max(4, Math.min(rr.width - tw - 4, x - tw / 2)) + 'px';
+      tip.style.top = Math.max(0, y - tip.offsetHeight - 8) + 'px';
+    }
+    function clearFocus() {
+      root.classList.remove('hl-on');
+      Array.prototype.forEach.call(root.querySelectorAll('.strip-av.hl'), function (el) { el.classList.remove('hl'); });
+      tip.hidden = true;
+    }
+
+    function layout() {
+      var small = root.clientWidth < 600;
+      // Avatares empilhados como moedas (sobreposição de ~20%) e vizinhos na
+      // mesma altura podendo encostar um pouco: as iniciais continuam visíveis
+      // e a seção fica bem mais baixa.
+      var S = small ? 20 : 24, step = Math.round(S * 0.8), GAP = 0, PAD = 8;
+      rows.forEach(function (rw) {
+        var W = rw.track.clientWidth;
+        if (!W) return;
+        var minGap = (S * 0.85) / W * 100; // distância mínima, em % do trilho
+        var placed = [], up = 0, down = 0;
+        rw.avs.slice().sort(function (x, y) { return y.v - x.v || nameOf(x.p).localeCompare(nameOf(y.p), 'pt-BR'); }).forEach(function (o) {
+          var x = 100 - o.v;
+          for (var k = 0; k < 60; k++) {
+            var lvl = k === 0 ? 0 : (k % 2 ? -(k + 1) / 2 : k / 2); // 0, acima, abaixo, acima...
+            if (!placed.some(function (q) { return q.lvl === lvl && Math.abs(q.x - x) < minGap; })) {
+              placed.push({ x: x, lvl: lvl }); o.lvl = lvl; break;
+            }
+          }
+          if (-o.lvl > up) up = -o.lvl;
+          if (o.lvl > down) down = o.lvl;
+        });
+        var lineY = PAD + up * step + S / 2;
+        rw.track.style.height = (PAD * 2 + (up + down + 1) * step - GAP) + 'px';
+        rw.track.style.setProperty('--line-y', lineY + 'px');
+        rw.avs.forEach(function (o) {
+          o.el.style.width = S + 'px';
+          o.el.style.height = S + 'px';
+          o.el.style.top = (lineY + o.lvl * step) + 'px';
+        });
+      });
+    }
+    return { el: root, layout: layout };
   }
 
   // Turmas: componentes conexos do grafo "cada pessoa → seus k mais parecidos".
@@ -1307,11 +1424,12 @@
       h('p', { class: 'caption' }, 'Roxo = polo esquerdo (rótulo à esquerda), laranja = polo direito (rótulo à direita), cinza = centro. Pessoas ordenadas por agrupamento hierárquico: colunas vizinhas têm perfis parecidos. Clique em uma célula ou nome para abrir a pessoa.')
     ], [toggle('Mostrar números', g.values, function (on) { set(function (s) { s.group.values = on; }); })]));
 
-    var strip = chartBox('stripChart');
+    var stripsEl = stripsView(ctx, { byCat: g.stripColor === 'side', showRef: ctx.filterActive && state.showRef });
     view.appendChild(section('faixas', 'Distribuição', 'Faixas por eixo', [
-      strip,
-      h('p', { class: 'caption' }, 'Um ponto por pessoa; o polo esquerdo fica à esquerda. O losango cheio é a média do filtro' + (ctx.filterActive && state.showRef ? '; o losango vazado, a média do grupo inteiro' : '') + '.')
-    ]));
+      stripsEl.el,
+      h('p', { class: 'caption' }, 'Um avatar por pessoa, com as iniciais; o polo esquerdo fica à esquerda e quem tem o mesmo valor fica empilhado. A barra escura é a média do filtro' + (ctx.filterActive && state.showRef ? '; a tracejada, a média do grupo inteiro' : '') + '. Passe o mouse (ou toque) num avatar para ver o nome e o valor: a pessoa acende em todos os eixos. ' + (Charts.isTouch() ? 'Toque de novo para abrir a pessoa.' : 'Clique para abrir a pessoa.'))
+    ], [segmented([{ id: 'person', label: 'Cor por pessoa' }, { id: 'side', label: 'Por categoria' }], g.stripColor, function (v) { set(function (s) { s.group.stripColor = v; }); }, 'Cor dos avatares')]));
+    stripsEl.layout();
 
     var cons = chartBox('consChart');
     view.appendChild(section('consenso', 'Desvio padrão', 'Consenso vs divisão', [
@@ -1420,7 +1538,6 @@
       }, { onPerson: chartOpenPerson });
     }
     if (desktopOnly(heat, 'heat', 'O heatmap com todas as pessoas')) Charts.heatmap(heat, ctx, { values: g.values, photos: state.photos }, { onPerson: chartOpenPerson });
-    Charts.strips(strip, ctx, { showRef: state.showRef }, { onPerson: chartOpenPerson });
     Charts.consensus(cons, ctx);
     if (ctx.people.length >= 2 && desktopOnly(aff, 'aff', 'A matriz pessoa × pessoa')) Charts.affinity(aff, ctx, { values: g.values, photos: state.photos, mode: g.aff }, { onPerson: chartOpenPerson });
     derivedBoxes.forEach(function (d) { Charts.counts(d.box, d.items); });
@@ -1969,7 +2086,7 @@
       h('dt', null, 'Destaques do grupo'), h('dd', null, 'Superlativos calculados com os 12 números das pessoas no filtro: quem tem mais e menos convicção, o par mais parecido e o mais distante, quem está mais perto e mais longe da média, a posição mais extrema num eixo e os eixos que mais dividem e unem o grupo.'),
       h('dt', null, 'Rede de afinidade'), h('dd', null, 'Cada pessoa é um nó ligado às 1, 2 ou 3 pessoas mais parecidas com ela (menor distância média por eixo). Linha cheia quando a escolha é mútua, tracejada quando é de um lado só. As turmas são os grupos que ficam ligados entre si; com 1 vizinho aparecem as turmas mais fechadas, com 2 ou 3 aparecem as pontes entre elas.'),
       h('dt', null, 'Heatmap pessoa × eixo'), h('dd', null, 'Roxo puxa para o polo esquerdo, laranja para o direito, cinza é centro. As pessoas são ordenadas por agrupamento hierárquico (ligação média), então vizinhas se parecem.'),
-      h('dt', null, 'Faixas por eixo'), h('dd', null, 'Um ponto por pessoa em cada eixo, com o polo esquerdo à esquerda. O losango é a média do filtro; com filtro ativo, o losango vazado é a média do grupo inteiro.'),
+      h('dt', null, 'Faixas por eixo'), h('dd', null, 'Um avatar com as iniciais por pessoa em cada eixo, com o polo esquerdo à esquerda; quem tem o mesmo valor fica empilhado. A barra escura é a média do filtro; com filtro ativo, a tracejada é a média do grupo inteiro. Passe o mouse num avatar para ver o nome e acender a pessoa em todos os eixos; a cor pode ser por pessoa ou por categoria.'),
       h('dt', null, 'Consenso vs divisão'), h('dd', null, 'Desvio padrão (populacional) de cada eixo: quanto menor, mais o grupo concorda.'),
       h('dt', null, 'Matriz de afinidade'), h('dd', null, 'Similaridade entre duas pessoas = 100 × (1 − distância euclidiana ÷ distância máxima possível). A distância máxima é √12 × 100 ≈ 346.'),
       h('dt', null, 'Comparar subgrupos'), h('dd', null, 'Média por eixo de cada valor de um atributo categórico, em barras ou radar. No radar, cada pessoa é um contorno fino na cor do subgrupo e a média é o contorno grosso; escolha quem aparece clicando nos nomes. Subgrupos com menos de 3 pessoas são sinalizados.'),

@@ -299,28 +299,6 @@
     });
   }
 
-  // Distribuição "beeswarm" 1D: devolve deslocamentos para evitar sobreposição.
-  function swarm(values, minGap, step, maxOffset) {
-    var order = values.map(function (v, i) { return i; }).sort(function (a, b) { return values[a] - values[b]; });
-    var placed = [];
-    var offsets = new Array(values.length).fill(0);
-    var candidates = [0];
-    for (var k = 1; k * step <= maxOffset + 1e-9; k++) candidates.push(k * step, -k * step);
-    order.forEach(function (i) {
-      var v = values[i];
-      for (var c = 0; c < candidates.length; c++) {
-        var off = candidates[c], ok = true;
-        for (var j = 0; j < placed.length; j++) {
-          if (Math.abs(placed[j].v - v) < minGap && Math.abs(placed[j].off - off) < step * 0.99) { ok = false; break; }
-        }
-        if (ok) { offsets[i] = off; placed.push({ v: v, off: off }); return; }
-      }
-      offsets[i] = candidates[candidates.length - 1];
-      placed.push({ v: v, off: offsets[i] });
-    });
-    return offsets;
-  }
-
   function richPoles(t) {
     return {
       n: { color: t.text, fontWeight: 600, fontSize: 12, lineHeight: 16 },
@@ -657,112 +635,6 @@
       }));
     }
     return chart;
-  }
-
-  // ---------------------------------------------------------------------------
-  // 2b. Faixas por eixo (strip / beeswarm)
-  // ---------------------------------------------------------------------------
-  function strips(el, ctx, cfg, handlers) {
-    var t = theme();
-    var n = ctx.axes.length;
-    var rowH = 46;
-    el.style.height = (n * rowH + 96) + 'px';
-    var compact = el.clientWidth < 700;
-    var plotWidth = Math.max(200, el.clientWidth - (compact ? 190 : 300));
-    var symbol = 10;
-    var minGap = 100 / plotWidth * (symbol + 1);
-
-    var pointData = [];
-    ctx.axes.forEach(function (axis, i) {
-      var vals = ctx.people.map(function (p) { return { p: p, v: ctx.vec(p.id, ctx.year)[i] }; });
-      var offs = swarm(vals.map(function (x) { return x.v; }), minGap, 0.13, 0.39);
-      vals.forEach(function (x, k) {
-        pointData.push({
-          value: [x.v, i + offs[k]], personId: x.p.id, axisIndex: i, name: ctx.name(x.p),
-          itemStyle: { color: ctx.color(x.p), borderColor: t.surface, borderWidth: 1.5 }
-        });
-      });
-    });
-
-    var meanData = ctx.mean ? ctx.axes.map(function (a, i) { return { value: [ctx.mean[i], i], axisIndex: i }; }) : [];
-    var refData = (cfg.showRef && ctx.meanAll && ctx.filterActive) ? ctx.axes.map(function (a, i) { return { value: [ctx.meanAll[i], i], axisIndex: i }; }) : [];
-
-    var bands = [];
-    for (var b = 0; b < n; b += 2) bands.push([{ yAxis: b - 0.5 }, { yAxis: b + 0.5 }]);
-
-    // Dois eixos de categoria só para os rótulos (polo esquerdo à esquerda, polo
-    // direito à direita) e um eixo de valor oculto, alinhado a eles, para os
-    // pontos: a categoria i fica centrada na mesma posição que o valor i.
-    function labelAxis(side) {
-      return categoryAxis(t, {
-        inverse: true, position: side, data: ctx.axes.map(function (a) { return a.key; }),
-        axisLabel: {
-          interval: 0, rich: richPoles(t), margin: 12,
-          formatter: function (key) {
-            var a = ctx.axisByKey(key);
-            if (side === 'left') return compact ? '{l|' + shortPole(a.leftPole) + '}' : '{n|' + a.name + '}\n{l|' + a.leftPole + '}';
-            return '{r|' + (compact ? shortPole(a.rightPole) : a.rightPole) + '}';
-          }
-        }
-      });
-    }
-    var valueAxisHidden = valueAxis(t, {
-      min: -0.5, max: n - 0.5, inverse: true, show: false, splitLine: { show: false }
-    });
-    var yAxes = [labelAxis('left'), labelAxis('right'), valueAxisHidden];
-
-    var series = [{
-      type: 'scatter', name: 'Pessoas', data: pointData, symbolSize: symbol, z: 3, yAxisIndex: 2,
-      emphasis: { scale: 1.4 },
-      markLine: { silent: true, symbol: 'none', label: { show: false }, lineStyle: { color: t.axis, type: 'dashed', width: 1 }, data: [{ xAxis: 50 }] },
-      markArea: { silent: true, itemStyle: { color: t.band }, data: bands }
-    }, {
-      type: 'scatter', name: 'Média do filtro', data: meanData, symbol: 'diamond', symbolSize: 15, z: 4, yAxisIndex: 2,
-      itemStyle: { color: t.text, borderColor: t.surface, borderWidth: 1.5 }
-    }];
-    if (refData.length) {
-      series.push({
-        type: 'scatter', name: 'Média do grupo inteiro', data: refData, symbol: 'diamond', symbolSize: 15, z: 4, yAxisIndex: 2,
-        itemStyle: { color: t.surface, borderColor: t.text, borderWidth: 1.5 }
-      });
-    }
-
-    var option = Object.assign(baseOption(t), {
-      grid: { left: 12, right: 12, top: 40, bottom: 12, containLabel: true },
-      legend: legend(t, { top: 0, left: 'center', data: series.map(function (s) { return s.name; }) }),
-      xAxis: valueAxis(t, {
-        min: 0, max: 100, interval: compact ? 50 : 25, inverse: true,
-        axisLabel: {
-          color: t.muted, fontSize: compact ? 10 : 11, alignMinLabel: 'right', alignMaxLabel: 'left',
-          formatter: function (v) {
-            if (v === 50) return 'centro';
-            if (v > 50) return fmt(v) + '% esq.';
-            return fmt(100 - v) + '% dir.';
-          }
-        }
-      }),
-      yAxis: yAxes,
-      series: series
-    });
-    option.tooltip.formatter = function (params) {
-      var a = ctx.axes[params.data.axisIndex];
-      var v = params.data.value[0];
-      if (params.seriesName === 'Pessoas') {
-        var p = ctx.personById(params.data.personId);
-        var r = ctx.result(p.id, ctx.year);
-        var it = Stats.intensity(v);
-        return '<div class="tt-head"><span class="tt-dot" style="background:' + ctx.color(p) + '"></span><b>' + esc(ctx.name(p)) + '</b></div>' +
-          '<div><b>' + esc(a.name) + '</b>: ' + poleLabel(a, v, r.precision || 0) + '</div>' +
-          '<div class="tt-muted">' + it.label + (it.level ? ' · ' + esc(Stats.dominantPole(a, v)) : '') + '</div>';
-      }
-      var nLabel = params.seriesName === 'Pessoas' ? '' : (params.seriesName === 'Média do filtro' ? ' (n = ' + ctx.people.length + ')' : ' (n = ' + ctx.allPeople.length + ')');
-      return '<b>' + esc(params.seriesName) + nLabel + '</b><br>' + esc(a.name) + ': ' + poleLabel(a, v, 1);
-    };
-    return mount(el, option, {
-      click: function (params) {
-        if (params.seriesName === 'Pessoas' && handlers && handlers.onPerson) handlers.onPerson(params.data.personId);
-      }
-    });
   }
 
   // ---------------------------------------------------------------------------
@@ -1417,7 +1289,6 @@
     quadrantName: quadrantName,
     explorer: explorer,
     heatmap: heatmap,
-    strips: strips,
     consensus: consensus,
     affinity: affinity,
     counts: counts,
